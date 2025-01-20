@@ -21,6 +21,7 @@ import logging
 import functools
 import os
 from uuid import UUID
+from urllib.parse import urlparse
 
 import requests
 from requests import Request
@@ -1380,6 +1381,179 @@ class DSpaceClient:
             params["sort"] = sort
 
         return do_paginate(url, params)
+    
+    def get_user_by_uuid(self, uuid, embeds=None):
+        """
+        Get a single user by UUID
+        @param uuid: UUID of the user
+        @param embeds: Optional list of resources to embed in response JSON
+        @return: User object constructed from the API response or None if not found
+        """
+        url = f"{self.API_ENDPOINT}/eperson/epersons/{uuid}"
+        params = parse_params(embeds=embeds)
+        r = self.api_get(url, params=params)
+        r_json = parse_json(response=r)
+        return User(r_json) if r_json else None
+    
+    def search_user_by_email(self, email):
+        """
+        Search for a user by email
+        @param email: User's email address
+        @return: User object if found, None otherwise
+        """
+        url = f"{self.API_ENDPOINT}/eperson/epersons/search/byEmail"
+        params = {"email": email}
+        r = self.api_get(url, params=params)
+        r_json = parse_json(response=r)
+        return User(r_json) if r_json else None
+
+    def search_users_by_metadata(self, query, embeds=None):
+        """
+        Search users by metadata
+        @param query: Search query (UUID, name, email, etc.)
+        @param embeds: Optional list of resources to embed in response JSON
+        @return: List of User objects matching the query
+        """
+        url = f"{self.API_ENDPOINT}/eperson/epersons/search/byMetadata"
+        params = parse_params({"query": query}, embeds=embeds)
+        r = self.api_get(url, params=params)
+        r_json = parse_json(response=r)
+        users = []
+        if "_embedded" in r_json and "epersons" in r_json["_embedded"]:
+            users = [
+                User(user_resource) for user_resource in r_json["_embedded"]["epersons"]
+            ]
+        return users
+    
+    def get_eperson_id_of_user(self):
+        """
+        Get the EPerson ID of the current user
+        authn/status response includes the eperson link
+        the uuid can be parsed from the eperson link and returned as text
+        @return: String of the user id or None in case of an error
+        """
+        url = f"{self.API_ENDPOINT}/authn/status"
+        try:
+            r = self.api_get(url)
+            r_json = parse_json(response=r)
+            if "_links" in r_json:
+                eperson_href = r_json["_links"]["eperson"]["href"]
+                path = urlparse(eperson_href).path
+                uuid = os.path.basename(path)
+                return uuid
+            else:
+                logging.error("EPerson link not found in response.")
+                return None
+        except Exception as e:
+            logging.error("Error retrieving EPerson ID: %s", e)
+            return None
+        
+    def get_special_groups_of_user(self):
+        """
+        Get the special groups of a user
+        authn/status/specialGroups
+        @return: List of Group objects or None in case of an error
+        """
+        url = f"{self.API_ENDPOINT}/authn/status/specialGroups"
+        try:
+            r = self.api_get(url)
+            r_json = parse_json(response=r)
+            if "_embedded" in r_json and "specialGroups" in r_json["_embedded"]:
+                groups = [
+                    Group(group_resource)
+                    for group_resource in r_json["_embedded"]["specialGroups"]
+                ]
+                return groups
+            logging.error("Special groups not found in response.")
+            return None
+        except Exception as e:
+            logging.error("Error retrieving special groups: %s", e)
+            return None
+
+    def get_groups_of_user(self, user_uuid):
+        """
+        Get groups of a user
+        @param user_uuid: UUID of the user
+        @return: List of Group objects
+        """
+        url = f"{self.API_ENDPOINT}/eperson/epersons/{user_uuid}/groups"
+        r = self.api_get(url)
+        r_json = parse_json(response=r)
+        groups = []
+        if "_embedded" in r_json and "groups" in r_json["_embedded"]:
+            groups = [
+                Group(group_resource)
+                for group_resource in r_json["_embedded"]["groups"]
+            ]
+        return groups
+    
+    def search_users_not_in_group(self, group_uuid, query=None, embeds=None):
+        """
+        Search users not in a specific group
+        @param group_uuid: UUID of the group
+        @param query: Search query (UUID, name, email, etc.)
+        @param embeds: Optional list of resources to embed in response JSON
+        @return: List of User objects matching the query
+        """
+        url = f"{self.API_ENDPOINT}/eperson/epersons/search/isNotMemberOf"
+        params = parse_params(params={"group": group_uuid, "query": query}, embeds=embeds)
+        r = self.api_get(url, params=params)
+        r_json = parse_json(response=r)
+        users = []
+        if "_embedded" in r_json and "epersons" in r_json["_embedded"]:
+            users = [
+                User(user_resource) for user_resource in r_json["_embedded"]["epersons"]
+            ]
+        return users
+    
+    def update_user_metadata(self, user_uuid, path, value, embeds=None):
+        """
+        Update user metadata
+        @param user_uuid: UUID of the user
+        @param metadata_updates: List of metadata updates in the PATCH format
+        @return: Updated User object or None if the operation fails
+        """
+        url = f"{self.API_ENDPOINT}/eperson/epersons/{user_uuid}"
+        r = self.api_patch(
+            url=url,
+            operation="replace",
+            path=path,
+            value=value,
+            params=parse_params(embeds=embeds),
+        )
+        r_json = parse_json(response=r)
+        return User(r_json) if r_json else None
+    
+    def change_user_password(self, user_uuid, current_password, new_password):
+        """
+        Change the password of a user
+        @param user_uuid: UUID of the user
+        @param current_password: Current password of the user
+        @param new_password: New password for the user
+        @return: Boolean indicating success or failure
+        """
+        # TODO: ensure this is only triggered when the user management is done in DSpace directly.
+        # If the user management is done in an external system (e.g. LDAP), this method should not be used.
+        url = f"{self.API_ENDPOINT}/eperson/epersons/{user_uuid}"
+        r = self.api_patch(
+            url,
+            operation="add",
+            path="/password",
+            value={
+                "new_password": new_password,
+                "current_password": current_password,
+            },
+        )
+        if r.status_code == 200:
+            logging.info("Updated Password for user %s", user_uuid)
+            return True
+        if r.status_code == 422:
+            logging.error(
+                "Password does not respect the rules configured in the regular expression."
+            )
+            return False
+        logging.error("An error occurred updating the password.")
+        return False
 
     def create_group(self, group, embeds=None):
         """
@@ -1400,6 +1574,265 @@ class DSpaceClient:
             )
         )
 
+    def get_groups(self, page=0, size=20, embeds=None):
+        """
+        Fetch all groups
+        @param page: Page number for pagination
+        @param size: Number of results per page
+        @param embeds: Optional list of resources to embed in response JSON
+        @return: List of Group objects
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups"
+        params = parse_params({"page": page, "size": size}, embeds=embeds)
+        response = self.api_get(url, params=params)
+        response_json = parse_json(response=response)
+        groups = []
+
+        if "_embedded" in response_json and "groups" in response_json["_embedded"]:
+            for group_data in response_json["_embedded"]["groups"]:
+                groups.append(Group(group_data))
+
+        return groups
+    
+    def get_subgroups(self, parent_uuid, page=0, size=20):
+        """
+        Get all subgroups of a parent group
+        @param parent_uuid: UUID of the parent group
+        @param page: Page number for pagination
+        @param size: Number of results per page
+        @return: List of Group objects
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{parent_uuid}/subgroups"
+        params = parse_params({"page": page, "size": size})
+        response = self.api_get(url, params=params)
+        response_json = parse_json(response=response)
+        subgroups = []
+
+        if "_embedded" in response_json and "groups" in response_json["_embedded"]:
+            for group_data in response_json["_embedded"]["groups"]:
+                subgroups.append(Group(group_data))
+
+        return subgroups
+
+    def add_subgroup(self, parent_uuid, child_uuid):
+        """
+        Add a subgroup to a parent group
+        @param parent_uuid: UUID of the parent group
+        @param child_uuid: UUID of the subgroup to add
+        @return: Boolean indicating success or failure
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{parent_uuid}/subgroups"
+        data = f"{self.API_ENDPOINT}/eperson/groups/{child_uuid}"
+        response = self.api_post_uri(url, uri_list=data, params=None)
+        if response.status_code == 204:
+            return True
+        if response.status_code == 401:
+            logging.error("You are not authenticated")
+            return False
+        if response.status_code == 403:
+            logging.error("You are not logged in with sufficient permissions")
+            return False
+        if response.status_code == 404:
+            logging.error("The parent group doesn't exist")
+            return False
+        if response.status_code == 422:
+            logging.error(
+                "The specified group is not found, or if adding the group would create a cyclic reference"
+            )
+            return False
+        logging.error(
+            "Failed to add subgroup %s to group %s: %s",
+            child_uuid,
+            parent_uuid,
+            response.text,
+        )
+        return False
+
+    def remove_subgroup(self, parent_uuid, child_uuid):
+        """
+        Remove a subgroup from a parent group
+        @param parent_uuid: UUID of the parent group
+        @param child_uuid: UUID of the subgroup to remove
+        @return: Boolean indicating success or failure
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{parent_uuid}/subgroups/{child_uuid}"
+        response = self.api_delete(url, params=None)
+        if response.status_code == 204:
+            return True
+        if response.status_code == 401:
+            logging.error("You are not authenticated")
+            return False
+        if response.status_code == 403:
+            logging.error("You are not logged in with sufficient permissions")
+            return False
+        if response.status_code == 404:
+            logging.error("The parent group doesn't exist")
+            return False
+        if response.status_code == 422:
+            logging.error("The specified group is not found")
+            return False
+        logging.error(
+            "Failed to remove subgroup %s from group %s: %s",
+            child_uuid,
+            parent_uuid,
+            response.text,
+        )
+        return False
+        
+    def search_groups_by_metadata(self, query, page=0, size=20):
+        """
+        Search for groups by metadata
+        @param query: Search query (UUID or group name)
+        @param page: Page number for pagination
+        @param size: Number of results per page
+        @return: List of Group objects
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/search/byMetadata"
+        params = parse_params({"query": query, "page": page, "size": size})
+        response = self.api_get(url, params=params)
+        response_json = parse_json(response=response)
+        groups = []
+
+        if "_embedded" in response_json and "groups" in response_json["_embedded"]:
+            for group_data in response_json["_embedded"]["groups"]:
+                groups.append(Group(group_data))
+
+        return groups
+    
+    def get_epersons_in_group(self, group_uuid, page=0, size=20):
+        """
+        Fetch all EPersons in a group
+        @param group_uuid: UUID of the group
+        @param page: Page number for pagination
+        @param size: Number of results per page
+        @return: List of User objects
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{group_uuid}/epersons"
+        params = parse_params({"page": page, "size": size})
+        response = self.api_get(url, params=params)
+        response_json = parse_json(response=response)
+        epersons = []
+
+        if "_embedded" in response_json and "epersons" in response_json["_embedded"]:
+            for eperson_data in response_json["_embedded"]["epersons"]:
+                epersons.append(User(eperson_data))
+
+        return epersons
+    
+    def add_eperson_to_group(self, group_uuid, eperson_uuid):
+        """
+        Add an EPerson to a group
+        @param group_uuid: UUID of the group
+        @param eperson_uuid: UUID of the EPerson to add
+        @return: Boolean indicating success or failure
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{group_uuid}/epersons"
+        # check if the eperson exists and is valid
+        eperson = self.get_user_by_uuid(eperson_uuid)
+        if eperson is None:
+            logging.error("The specified EPerson does not exist")
+            return False
+        if not isinstance(eperson, User):
+            logging.error("Invalid EPerson object")
+            return False
+        # check if the group exists and is valid
+        group = self.get_group_by_uuid(group_uuid)
+        if group is None:
+            logging.error("The specified group does not exist")
+            return False
+        if not isinstance(group, Group):
+            logging.error("Invalid Group object")
+            return False
+        data = f"{self.API_ENDPOINT}/eperson/epersons/{eperson_uuid}"
+        response = self.api_post_uri(url, uri_list=data, params=None)
+        if response.status_code == 204:
+            return True
+        if response.status_code == 401:
+            logging.error("You are not authenticated")
+            return False
+        if response.status_code == 403:
+            logging.error("You are not logged in with sufficient permissions")
+            return False
+        if response.status_code == 422:
+            logging.error("The specified group or EPerson is not found")
+            return False
+        logging.error(
+            "Failed to add EPerson %s to group %s: %s",
+            eperson_uuid,
+            group_uuid,
+            response.text,
+        )
+        return False
+
+    def remove_eperson_from_group(self, group_uuid, eperson_uuid):
+        """
+        Remove an EPerson from a group
+        @param group_uuid: UUID of the group
+        @param eperson_uuid: UUID of the EPerson to remove
+        @return: Boolean indicating success or failure
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{group_uuid}/epersons/{eperson_uuid}"
+        response = self.api_delete(url, params=None)
+        if response.status_code == 204:
+            return True
+        if response.status_code == 401:
+            logging.error("You are not authenticated")
+            return False
+        if response.status_code == 403:
+            logging.error("You are not logged in with sufficient permissions")
+            return False
+        if response.status_code == 422:
+            logging.error("The specified group or EPerson is not found")
+            return False
+        logging.error(
+            "Failed to remove EPerson %s from group %s: %s",
+            eperson_uuid,
+            group_uuid,
+            response.text,
+        )
+        return False
+    
+    def update_group_name(self, uuid, new_name):
+        """
+        Update the name of a group
+        @param uuid: UUID of the group
+        @param new_name: New name for the group
+        @return: Updated Group object or None if the update fails
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{uuid}"
+        response = self.api_patch(
+            url, operation="replace", path="/name", value=new_name
+        )
+        response_json = parse_json(response=response)
+        return Group(response_json) if response_json else None
+    
+    def delete_group(self, uuid):
+        """
+        Delete a group by UUID
+        @param uuid: UUID of the group
+        @return: Boolean indicating success or failure
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{uuid}"
+        response = self.api_delete(url, params=None)
+        if response.status_code == 204:
+            return True
+        else:
+            logging.error("Failed to delete group %s: %s", uuid, response.text)
+            return False
+    
+    def get_group_by_uuid(self, uuid, embeds=None):
+        """
+        Fetch a single group by UUID
+        @param uuid: UUID of the group
+        @param embeds: Optional list of resources to embed in response JSON
+        @return: Group object or None if not found
+        """
+        url = f"{self.API_ENDPOINT}/eperson/groups/{uuid}"
+        params = parse_params(embeds=embeds)
+        response = self.api_get(url, params=params)
+        response_json = parse_json(response=response)
+        return Group(response_json) if response_json else None
+    
     def start_workflow(self, workspace_item):
         url = f"{self.API_ENDPOINT}/workflow/workflowitems"
         res = parse_json(self.api_post_uri(url, params=None, uri_list=workspace_item))
